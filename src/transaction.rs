@@ -24,7 +24,7 @@ pub struct TransactionRecord {
 }
 
 /// The engine's internal record of a deposit or withdrawal, kept for dispute lookups.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct StoredTransaction {
     pub client: u16,
     pub amount: Decimal,
