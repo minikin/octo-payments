@@ -2,9 +2,14 @@
 name = "octo-payments"
 version = "0.1.0"
 edition = "2024"
+default-run = "octo-payments"
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "octo-payments"
+path = "src/main.rs"
 
 [dependencies]
 csv = "1.4"
