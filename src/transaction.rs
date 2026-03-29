@@ -23,7 +23,8 @@ pub struct TransactionRecord {
     pub amount: Option<Decimal>,
 }
 
-/// The engine's internal record of a deposit or withdrawal, kept for dispute lookups.
+/// The engine's internal record of a deposit, kept for dispute lookups.
+/// Withdrawals are not stored because dispute/chargeback flow only applies to deposits.
 #[derive(Debug)]
 pub struct StoredTransaction {
     pub client: u16,

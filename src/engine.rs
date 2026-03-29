@@ -10,8 +10,9 @@ use crate::{
 
 #[derive(Debug)]
 pub struct PaymentEngine {
-    pub accounts: HashMap<u16, Account>,
-    pub transactions: HashMap<u32, StoredTransaction>,
+    accounts: HashMap<u16, Account>,
+    /// Stores deposits for dispute/resolve/chargeback lookups.
+    transactions: HashMap<u32, StoredTransaction>,
 }
 
 impl PaymentEngine {
@@ -37,7 +38,7 @@ impl PaymentEngine {
             },
             TransactionType::Withdrawal => {
                 let amount = record.amount.ok_or(PaymentEngineError::MissingAmount(record.tx))?;
-                self.apply_withdrawal(record.client, record.tx, amount);
+                self.apply_withdrawal(record.client, amount);
             },
             TransactionType::Dispute => self.apply_dispute(record.client, record.tx),
             TransactionType::Resolve => self.apply_resolve(record.client, record.tx),
@@ -78,7 +79,6 @@ impl PaymentEngine {
     fn apply_withdrawal(
         &mut self,
         client: u16,
-        tx: u32,
         amount: Decimal,
     ) {
         if amount <= Decimal::ZERO {
@@ -94,7 +94,6 @@ impl PaymentEngine {
         }
 
         account.available -= amount;
-        self.transactions.insert(tx, StoredTransaction::new(client, amount));
     }
 
     /// Implements the rules for a dispute transaction, including ignoring invalid inputs

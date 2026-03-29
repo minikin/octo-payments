@@ -6,7 +6,10 @@ use octo_payments::{
 };
 
 fn main() -> Result<(), PaymentEngineError> {
-    let path = args().nth(1).expect("Usage: <transactions.csv>");
+    let Some(path) = args().nth(1) else {
+        eprintln!("Usage: octo-payments <transactions.csv>");
+        std::process::exit(1);
+    };
 
     let mut reader = ReaderBuilder::new().trim(All).flexible(true).from_path(&path)?;
 
