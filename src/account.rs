@@ -1,6 +1,7 @@
 use rust_decimal::Decimal;
 use serde::Serialize;
 
+/// Account state for a client.
 #[derive(Debug, Default)]
 pub struct Account {
     pub available: Decimal,

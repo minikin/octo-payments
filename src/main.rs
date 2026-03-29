@@ -1,6 +1,6 @@
 use std::env::args;
 
-use csv::{ReaderBuilder, Trim::All};
+use csv::{ReaderBuilder, Trim::All, Writer};
 use octo_payments::{
     account::AccountRecord, engine::PaymentEngine, error::PaymentEngineError, transaction::TransactionRecord,
 };
@@ -23,7 +23,7 @@ fn main() -> Result<(), PaymentEngineError> {
         }
     }
 
-    let mut writer = csv::Writer::from_writer(std::io::stdout());
+    let mut writer = Writer::from_writer(std::io::stdout());
 
     let mut accounts: Vec<_> = payment_engine.into_accounts().into_iter().collect();
     accounts.sort_by_key(|(client, _)| *client);

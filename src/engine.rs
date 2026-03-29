@@ -11,7 +11,6 @@ use crate::{
 #[derive(Debug)]
 pub struct PaymentEngine {
     pub accounts: HashMap<u16, Account>,
-
     pub transactions: HashMap<u32, StoredTransaction>,
 }
 
@@ -53,6 +52,8 @@ impl PaymentEngine {
         self.accounts
     }
 
+    /// Implements the rules for a deposit transaction, including ignoring invalid inputs
+    /// and maintaining the invariant that accounts with locked status cannot be mutated.
     fn apply_deposit(
         &mut self,
         client: u16,
@@ -72,6 +73,8 @@ impl PaymentEngine {
         self.transactions.insert(tx, StoredTransaction::new(client, amount));
     }
 
+    /// Implements the rules for a withdrawal transaction, including ignoring invalid inputs
+    /// and maintaining the invariant that accounts with locked status cannot be mutated.
     fn apply_withdrawal(
         &mut self,
         client: u16,
@@ -94,6 +97,8 @@ impl PaymentEngine {
         self.transactions.insert(tx, StoredTransaction::new(client, amount));
     }
 
+    /// Implements the rules for a dispute transaction, including ignoring invalid inputs
+    /// and maintaining the invariant that accounts with locked status cannot be mutated.
     fn apply_dispute(
         &mut self,
         client: u16,
@@ -105,40 +110,24 @@ impl PaymentEngine {
         let Some(stored) = transactions.get_mut(&tx) else {
             return;
         };
+        if stored.client != client || stored.disputed {
+            return;
+        }
 
         let account = accounts.entry(client).or_default();
         if account.locked {
             return;
         }
 
+        // available may go negative if funds were subsequently withdrawn
         account.available -= stored.amount;
         account.held += stored.amount;
         stored.disputed = true;
     }
 
+    /// Implements the rules for a resolve transaction, including ignoring invalid inputs
+    /// and maintaining the invariant that accounts with locked status cannot be mutated.
     fn apply_resolve(
-        &mut self,
-        client: u16,
-        tx: u32,
-    ) {
-        let transactions = &mut self.transactions;
-        let accounts = &mut self.accounts;
-
-        let Some(stored) = transactions.get_mut(&tx) else {
-            return;
-        };
-
-        let account = accounts.entry(client).or_default();
-        if account.locked {
-            return;
-        }
-
-        account.held -= stored.amount;
-        account.available += stored.amount;
-        stored.disputed = false;
-    }
-
-    fn apply_chargeback(
         &mut self,
         client: u16,
         tx: u32,
@@ -155,6 +144,35 @@ impl PaymentEngine {
         }
 
         let account = accounts.entry(client).or_default();
+        if account.locked {
+            return;
+        }
+
+        account.held -= stored.amount;
+        account.available += stored.amount;
+        stored.disputed = false;
+    }
+
+    /// Implements the rules for a chargeback transaction, including ignoring invalid inputs
+    /// and maintaining the invariant that accounts with locked status cannot be mutated.
+    fn apply_chargeback(
+        &mut self,
+        client: u16,
+        tx: u32,
+    ) {
+        let transactions = &mut self.transactions;
+        let accounts = &mut self.accounts;
+
+        let Some(stored) = transactions.get_mut(&tx) else {
+            return;
+        };
+
+        if stored.client != client || !stored.disputed {
+            return;
+        }
+
+        // chargebacks are not gated on locked status
+        let account = accounts.entry(client).or_default();
         account.held -= stored.amount;
         account.locked = true;
         stored.disputed = false
@@ -164,5 +182,170 @@ impl PaymentEngine {
 impl Default for PaymentEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn engine_with(csv: &str) -> HashMap<u16, Account> {
+        let mut reader = csv::ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .flexible(true)
+            .from_reader(csv.as_bytes());
+        let mut engine = PaymentEngine::new();
+        for result in reader.deserialize::<TransactionRecord>() {
+            let record = result.unwrap();
+            let _ = engine.process(record);
+        }
+        engine.into_accounts()
+    }
+
+    #[test]
+    fn deposit_credits_available() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,1.0");
+        assert_eq!(accounts[&1].available, dec!(1.0));
+        assert_eq!(accounts[&1].held, dec!(0));
+    }
+
+    #[test]
+    fn deposit_creates_account_if_not_exists() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,99,1,5.0");
+        assert!(accounts.contains_key(&99));
+    }
+
+    #[test]
+    fn deposit_negative_amount_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,-5.0");
+        assert_eq!(accounts.get(&1).map(|a| a.available), None);
+    }
+
+    #[test]
+    fn deposit_zero_amount_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,0.0");
+        assert_eq!(accounts.get(&1).map(|a| a.available), None);
+    }
+
+    #[test]
+    fn withdrawal_debits_available() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\nwithdrawal,1,2,1.5");
+        assert_eq!(accounts[&1].available, dec!(0.5));
+    }
+
+    #[test]
+    fn withdrawal_insufficient_funds_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,1.0\nwithdrawal,1,2,2.0");
+        assert_eq!(accounts[&1].available, dec!(1.0));
+    }
+
+    #[test]
+    fn withdrawal_negative_amount_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,5.0\nwithdrawal,1,2,-1.0");
+        assert_eq!(accounts[&1].available, dec!(5.0));
+    }
+
+    #[test]
+    fn withdrawal_exact_funds_succeeds() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,1.0\nwithdrawal,1,2,1.0");
+        assert_eq!(accounts[&1].available, dec!(0));
+    }
+
+    #[test]
+    fn dispute_moves_funds_available_to_held() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,");
+        assert_eq!(accounts[&1].available, dec!(0));
+        assert_eq!(accounts[&1].held, dec!(2.0));
+        assert_eq!(accounts[&1].total(), dec!(2.0));
+    }
+
+    #[test]
+    fn dispute_unknown_tx_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,99,");
+        assert_eq!(accounts[&1].available, dec!(2.0));
+        assert_eq!(accounts[&1].held, dec!(0));
+    }
+
+    #[test]
+    fn dispute_already_disputed_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\ndispute,1,1,");
+        assert_eq!(accounts[&1].available, dec!(0));
+        assert_eq!(accounts[&1].held, dec!(2.0));
+    }
+
+    #[test]
+    fn resolve_releases_held_to_available() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\nresolve,1,1,");
+        assert_eq!(accounts[&1].available, dec!(2.0));
+        assert_eq!(accounts[&1].held, dec!(0));
+    }
+
+    #[test]
+    fn resolve_non_disputed_tx_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\nresolve,1,1,");
+        assert_eq!(accounts[&1].available, dec!(2.0));
+        assert_eq!(accounts[&1].held, dec!(0));
+    }
+
+    #[test]
+    fn resolve_unknown_tx_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\nresolve,1,99,");
+        assert_eq!(accounts[&1].available, dec!(2.0));
+    }
+
+    #[test]
+    fn chargeback_decrements_held_and_total() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\nchargeback,1,1,");
+        assert_eq!(accounts[&1].held, dec!(0));
+        assert_eq!(accounts[&1].total(), dec!(0));
+    }
+
+    #[test]
+    fn chargeback_locks_account() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\nchargeback,1,1,");
+        assert!(accounts[&1].locked);
+    }
+
+    #[test]
+    fn chargeback_non_disputed_tx_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\nchargeback,1,1,");
+        assert!(!accounts[&1].locked);
+        assert_eq!(accounts[&1].available, dec!(2.0));
+    }
+
+    #[test]
+    fn double_chargeback_is_prevented() {
+        let accounts =
+            engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\nchargeback,1,1,\nchargeback,1,1,");
+        assert_eq!(accounts[&1].held, dec!(0));
+        assert_eq!(accounts[&1].total(), dec!(0));
+    }
+
+    #[test]
+    fn locked_account_ignores_deposit() {
+        let accounts =
+            engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndispute,1,1,\nchargeback,1,1,\ndeposit,1,2,5.0");
+        assert_eq!(accounts[&1].available, dec!(0));
+    }
+
+    #[test]
+    fn locked_account_ignores_withdrawal() {
+        let accounts =
+            engine_with("type,client,tx,amount\ndeposit,1,1,5.0\ndispute,1,1,\nchargeback,1,1,\nwithdrawal,1,2,1.0");
+        assert_eq!(accounts[&1].available, dec!(0));
+    }
+
+    #[test]
+    fn no_floating_point_drift() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,0.1\ndeposit,1,2,0.2");
+        assert_eq!(accounts[&1].available, dec!(0.3));
+    }
+
+    #[test]
+    fn four_decimal_precision_preserved() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,9999.9999");
+        assert_eq!(accounts[&1].available, dec!(9999.9999));
     }
 }
