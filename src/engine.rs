@@ -65,6 +65,10 @@ impl PaymentEngine {
             return;
         }
 
+        if self.transactions.contains_key(&tx) {
+            return;
+        }
+
         let account = self.accounts.entry(client).or_default();
         if account.locked {
             return;
@@ -334,6 +338,12 @@ mod tests {
         let accounts =
             engine_with("type,client,tx,amount\ndeposit,1,1,5.0\ndispute,1,1,\nchargeback,1,1,\nwithdrawal,1,2,1.0");
         assert_eq!(accounts[&1].available, dec!(0));
+    }
+
+    #[test]
+    fn deposit_duplicate_tx_id_is_ignored() {
+        let accounts = engine_with("type,client,tx,amount\ndeposit,1,1,2.0\ndeposit,1,1,2.0");
+        assert_eq!(accounts[&1].available, dec!(2.0));
     }
 
     #[test]
